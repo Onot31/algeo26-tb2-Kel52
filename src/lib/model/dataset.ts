@@ -9,8 +9,17 @@ export type Dataset = { X: Matrix; vectors: Float64Array[]; labels: string[]; im
 export type Split = "train" | "validation";
 
 type Manifest = { split?: Partial<Record<Split, ManifestEntry[]>> };
+type Source = { entry: ManifestEntry; dir: string; id: string };
 
 const DATA_DIR = path.resolve("data");
+
+export function uploadsDir(): string {
+  return path.join(DATA_DIR, "uploads");
+}
+
+export function extraFile(): string {
+  return path.join(uploadsDir(), "extra-manifest.json");
+}
 
 export async function loadManifest(): Promise<Record<Split, ManifestEntry[]>> {
   const file = path.join(DATA_DIR, "manifest.json");
@@ -26,19 +35,48 @@ export async function loadManifest(): Promise<Record<Split, ManifestEntry[]>> {
   return { train, validation };
 }
 
+export async function loadExtra(): Promise<ManifestEntry[]> {
+  let raw: { entries?: ManifestEntry[] };
+  try {
+    raw = JSON.parse(await fs.readFile(extraFile(), "utf8")) as { entries?: ManifestEntry[] };
+  } catch {
+    return [];
+  }
+  return Array.isArray(raw.entries) ? raw.entries : [];
+}
+
+async function sources(split: Split): Promise<Source[]> {
+  const base = path.join(DATA_DIR, split);
+  const official = (await loadManifest())[split].map((entry) => ({
+    entry,
+    dir: base,
+    id: `${split}/${entry.file}`,
+  }));
+  if (split !== "train") return official;
+  const extra = (await loadExtra()).map((entry) => ({
+    entry,
+    dir: uploadsDir(),
+    id: `uploads/${entry.file}`,
+  }));
+  return [...official, ...extra];
+}
+
 export async function loadSplit(split: Split): Promise<Dataset> {
-  const entries = (await loadManifest())[split];
-  const dir = path.join(DATA_DIR, split);
+  const list = await sources(split);
   const vectors: Float64Array[] = [];
-  for (const entry of entries) {
-    const buffer = await fs.readFile(path.join(dir, entry.file));
+  for (const item of list) {
+    const buffer = await fs.readFile(path.join(item.dir, item.entry.file));
     vectors.push(await imageToVector(buffer));
   }
   const columns = Array.from({ length: FEATURE_DIM }, (_, i) => vectors.map((v) => v[i]));
   return {
     X: matrix(columns),
     vectors,
-    labels: entries.map((e) => e.subjectId),
-    imageIds: entries.map((e) => e.file),
+    labels: list.map((item) => item.entry.subjectId),
+    imageIds: list.map((item) => item.id),
   };
+}
+
+export async function knownSubjects(): Promise<string[]> {
+  return Array.from(new Set((await sources("train")).map((item) => item.entry.subjectId)));
 }
